@@ -43,14 +43,30 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     && rm -rf /var/lib/apt/lists/*
 
 # Install ChromeDriver (matching Chrome version)
-# Use Chrome for Testing API to get the latest stable version
+# Get Chrome version and download matching ChromeDriver
 RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1) \
     && echo "Chrome major version: $CHROME_VERSION" \
-    && CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | grep -oP '"version": "\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1) \
-    && echo "Installing ChromeDriver version: $CHROMEDRIVER_VERSION" \
-    && wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip \
+    && echo "Downloading ChromeDriver..." \
+    && CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | grep -oE '"version": "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' | head -1 | cut -d'"' -f4) \
+    && if [ -z "$CHROMEDRIVER_VERSION" ]; then \
+        echo "Trying alternative method to get ChromeDriver version..."; \
+        CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1); \
+    fi \
+    && if [ -z "$CHROMEDRIVER_VERSION" ]; then \
+        echo "Using legacy ChromeDriver API..."; \
+        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}"); \
+        echo "Downloading ChromeDriver ${CHROMEDRIVER_VERSION} from legacy API"; \
+        wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" -O /tmp/chromedriver.zip; \
+    else \
+        echo "Installing ChromeDriver version: $CHROMEDRIVER_VERSION"; \
+        wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip; \
+    fi \
+    && if [ ! -f /tmp/chromedriver.zip ] || [ ! -s /tmp/chromedriver.zip ]; then \
+        echo "ERROR: Failed to download ChromeDriver"; \
+        exit 1; \
+    fi \
     && unzip -q /tmp/chromedriver.zip -d /tmp/ \
-    && mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
+    && find /tmp -name chromedriver -type f -executable -exec mv {} /usr/local/bin/chromedriver \; \
     && chmod +x /usr/local/bin/chromedriver \
     && rm -rf /tmp/chromedriver* \
     && chromedriver --version
