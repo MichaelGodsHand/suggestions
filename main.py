@@ -13,12 +13,25 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 import time
 import logging
+import os
+import subprocess
+import shutil
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Try to import webdriver-manager for automatic ChromeDriver management
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    WEBDRIVER_MANAGER_AVAILABLE = True
+except ImportError:
+    WEBDRIVER_MANAGER_AVAILABLE = False
+    logger.warning("webdriver-manager not available. Install with: pip install webdriver-manager")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -42,6 +55,31 @@ class SuggestionResponse(BaseModel):
     status: str
 
 
+def get_chromedriver_path():
+    """Find ChromeDriver path, checking common locations for Cloud Run"""
+    # Check if chromedriver is in PATH
+    chromedriver_path = shutil.which('chromedriver')
+    if chromedriver_path:
+        logger.info(f"Found ChromeDriver in PATH: {chromedriver_path}")
+        return chromedriver_path
+    
+    # Check common installation paths
+    common_paths = [
+        '/usr/bin/chromedriver',
+        '/usr/local/bin/chromedriver',
+        '/opt/chromedriver/chromedriver',
+        '/usr/lib/chromium-browser/chromedriver',
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            logger.info(f"Found ChromeDriver at: {path}")
+            return path
+    
+    logger.warning("ChromeDriver not found in common paths, Selenium will try to use webdriver-manager")
+    return None
+
+
 def get_grokipedia_suggestions(query: str, headless: bool = True) -> List[str]:
     """
     Search Grokipedia and get all suggestions that appear
@@ -57,17 +95,85 @@ def get_grokipedia_suggestions(query: str, headless: bool = True) -> List[str]:
     try:
         logger.info(f"Setting up Chrome driver for query: {query}")
         
-        # Setup Chrome options
+        # Setup Chrome options for Cloud Run / containerized environments
         chrome_options = Options()
+        
+        # Essential for headless mode in containers
         if headless:
             chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--headless=new')  # Use new headless mode
+        
+        # Required for running in containers (Cloud Run, Docker, etc.)
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        chrome_options.add_argument('--disable-software-rasterizer')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-background-timer-throttling')
+        chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+        chrome_options.add_argument('--disable-renderer-backgrounding')
+        chrome_options.add_argument('--disable-features=TranslateUI')
+        chrome_options.add_argument('--disable-ipc-flooding-protection')
         
-        driver = webdriver.Chrome(options=chrome_options)
+        # Window size
+        chrome_options.add_argument('--window-size=1920,1080')
+        
+        # User agent
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        
+        # Binary location (check common Chrome/Chromium paths)
+        chrome_binary_paths = [
+            '/usr/bin/google-chrome',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/chromium',
+            '/usr/local/bin/chrome',
+        ]
+        
+        for binary_path in chrome_binary_paths:
+            if os.path.exists(binary_path):
+                chrome_options.binary_location = binary_path
+                logger.info(f"Using Chrome binary at: {binary_path}")
+                break
+        
+        # Try to find ChromeDriver
+        chromedriver_path = get_chromedriver_path()
+        
+        # Create service with ChromeDriver
+        if chromedriver_path:
+            # Use found ChromeDriver
+            service = Service(chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info(f"Using ChromeDriver from: {chromedriver_path}")
+        elif WEBDRIVER_MANAGER_AVAILABLE:
+            # Use webdriver-manager to automatically download and manage ChromeDriver
+            try:
+                service = ChromeService(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                logger.info("Using webdriver-manager for ChromeDriver")
+            except Exception as e:
+                logger.error(f"webdriver-manager failed: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to setup ChromeDriver with webdriver-manager: {str(e)}"
+                )
+        else:
+            # Fallback: Let Selenium try to find ChromeDriver automatically
+            try:
+                driver = webdriver.Chrome(options=chrome_options)
+                logger.info("Using Selenium's automatic ChromeDriver detection")
+            except Exception as e:
+                logger.error(f"Failed to create Chrome driver: {e}")
+                error_msg = (
+                    "ChromeDriver not found. Solutions:\n"
+                    "1. Install ChromeDriver: apt-get install chromium-chromedriver\n"
+                    "2. Install webdriver-manager: pip install webdriver-manager\n"
+                    "3. Add ChromeDriver to PATH\n"
+                    f"Error: {str(e)}"
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=error_msg
+                )
         
         logger.info(f"Opening Grokipedia...")
         driver.get("https://grokipedia.com/")
