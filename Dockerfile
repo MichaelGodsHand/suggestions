@@ -98,4 +98,4 @@ EXPOSE 8080
 # Command to run the application (update based on your main file)
 # For suggestions.py: CMD ["uvicorn", "suggestions:app", "--host", "0.0.0.0", "--port", "8080"]
 # For api.py: CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080"]
-CMD ["uvicorn", "suggestions:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
